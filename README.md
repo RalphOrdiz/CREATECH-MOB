@@ -194,7 +194,6 @@ createch-app/
 │   ├── index.tsx                # Login screen
 │   ├── register.tsx             # Registration screen
 │   ├── login.tsx                # Alternative login (if needed)
-│   ├── modal.tsx                # Generic modal
 │   ├── notifications.tsx        # Notification center
 │   └── _layout.tsx              # Root layout
 ├── components/                   # Reusable UI components
@@ -215,11 +214,9 @@ createch-app/
 │   │       ├── MatchesSection.tsx
 │   │       └── ServicesSection.tsx
 │   ├── ui/                      # Generic UI components
-│   │   ├── collapsible.tsx
 │   │   ├── icon-symbol.tsx
 │   │   └── icon-symbol.ios.tsx
 │   ├── SmartMatchProgressHeader.tsx
-│   ├── optimized-image.tsx
 │   ├── themed-text.tsx
 │   └── themed-view.tsx
 ├── context/                      # React Context providers

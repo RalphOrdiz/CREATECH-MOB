@@ -81,7 +81,6 @@ export default function RootLayout() {
                     animation: 'none'
                   }}
                 />
-                <Stack.Screen name="modal" options={{ presentation: 'modal' }} />
               </Stack>
             </UnreadProvider>
           </OrderProvider>

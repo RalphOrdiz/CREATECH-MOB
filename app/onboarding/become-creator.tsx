@@ -373,12 +373,6 @@ export default function BecomeCreatorScreen() {
 
       setPhone(cleanPhone);
 
-      // 5. THREE ID Photos Check
-      if (!idFrontImage || !idBackImage || !idSelfieImage) {
-        showAlert('warning', 'ID Photos Required', 'Please upload all 3 verification photos: Front of ID, Back of ID, and Selfie with ID.');
-        return;
-      }
-
       setStep(2);
       scrollToTop();
 
@@ -410,61 +404,33 @@ export default function BecomeCreatorScreen() {
 
     setLoading(true);
     try {
-      // Upload all 3 ID photos
-      let idFrontUrl = null;
-      let idBackUrl = null;
-      let idSelfieUrl = null;
+      const uploadVerificationImage = async (suffix: string, base64: string | null) => {
+        if (!base64) return null;
 
-      if (idFrontBase64) {
         try {
-          const fileName = `${user.uid}/id_front_${Date.now()}.jpg`;
+          const fileName = `${user.uid}/${suffix}_${Date.now()}.jpg`;
           const { error: uploadError } = await supabase.storage
             .from('id-verification')
-            .upload(fileName, decode(idFrontBase64), { contentType: 'image/jpeg', upsert: false });
+            .upload(fileName, decode(base64), { contentType: 'image/jpeg', upsert: false });
 
-          if (uploadError) throw new Error(`Failed to upload ID front: ${uploadError.message}`);
-
-          const { data: urlData } = supabase.storage.from('id-verification').getPublicUrl(fileName);
-          idFrontUrl = urlData.publicUrl;
-        } catch (uploadErr: any) {
-          console.error('ID front upload failed:', uploadErr);
-          throw new Error(uploadErr.message || 'Failed to upload ID front image');
-        }
-      }
-
-      if (idBackBase64) {
-        try {
-          const fileName = `${user.uid}/id_back_${Date.now()}.jpg`;
-          const { error: uploadError } = await supabase.storage
-            .from('id-verification')
-            .upload(fileName, decode(idBackBase64), { contentType: 'image/jpeg', upsert: false });
-
-          if (uploadError) throw new Error(`Failed to upload ID back: ${uploadError.message}`);
+          if (uploadError) {
+            console.warn(`Skipping ${suffix} upload:`, uploadError.message);
+            return null;
+          }
 
           const { data: urlData } = supabase.storage.from('id-verification').getPublicUrl(fileName);
-          idBackUrl = urlData.publicUrl;
+          return urlData.publicUrl;
         } catch (uploadErr: any) {
-          console.error('ID back upload failed:', uploadErr);
-          throw new Error(uploadErr.message || 'Failed to upload ID back image');
+          console.warn(`Skipping ${suffix} upload:`, uploadErr?.message || uploadErr);
+          return null;
         }
-      }
+      };
 
-      if (idSelfieBase64) {
-        try {
-          const fileName = `${user.uid}/id_selfie_${Date.now()}.jpg`;
-          const { error: uploadError } = await supabase.storage
-            .from('id-verification')
-            .upload(fileName, decode(idSelfieBase64), { contentType: 'image/jpeg', upsert: false });
-
-          if (uploadError) throw new Error(`Failed to upload selfie: ${uploadError.message}`);
-
-          const { data: urlData } = supabase.storage.from('id-verification').getPublicUrl(fileName);
-          idSelfieUrl = urlData.publicUrl;
-        } catch (uploadErr: any) {
-          console.error('Selfie upload failed:', uploadErr);
-          throw new Error(uploadErr.message || 'Failed to upload selfie image');
-        }
-      }
+      const [idFrontUrl, idBackUrl, idSelfieUrl] = await Promise.all([
+        uploadVerificationImage('id_front', idFrontBase64),
+        uploadVerificationImage('id_back', idBackBase64),
+        uploadVerificationImage('id_selfie', idSelfieBase64),
+      ]);
 
       const fullName = `${firstName.trim()} ${middleName.trim()} ${lastName.trim()}`.replace(/\s+/g, ' ').trim();
       const cleanPhone = phone.replace(/[^0-9]/g, '');
@@ -514,7 +480,7 @@ export default function BecomeCreatorScreen() {
       showAlert(
         'success',
         "Welcome, Creator!",
-        "Your profile has been verified and created successfully!",
+        "Your creator profile has been created successfully!",
         [
           { text: "Go to Dashboard", onPress: () => router.replace('/(tabs)/profile') }
         ]
@@ -563,7 +529,7 @@ export default function BecomeCreatorScreen() {
       <View style={styles.trustBanner}>
         <Ionicons name="shield-checkmark" size={24} color="#10b981" />
         <Text style={styles.trustText}>
-          To ensure trust and safety on Createch, we require your verified personal information. This will be kept private.
+          To ensure trust and safety on Createch, we collect your personal information. ID photos are optional for now and will only be used once verification storage is fully wired up.
         </Text>
       </View>
 
@@ -627,8 +593,8 @@ export default function BecomeCreatorScreen() {
       />
 
       {/* THREE ID PHOTOS */}
-      <Text style={[styles.inputLabel, themeStyles.text]}>Front of ID *</Text>
-      <Text style={[styles.uploadHint, themeStyles.textSecondary]}>Clear photo of the front side of your government-issued ID</Text>
+      <Text style={[styles.inputLabel, themeStyles.text]}>Front of ID (Optional)</Text>
+      <Text style={[styles.uploadHint, themeStyles.textSecondary]}>Optional for now. Add a clear photo of the front side of your government-issued ID if you want to save it.</Text>
       <Pressable onPress={() => pickIdImage('front')} style={[styles.uploadBox, themeStyles.placeholderBox]}>
         {idFrontImage ? (
           <Image source={{ uri: idFrontImage }} style={styles.idPreview} resizeMode="cover" />
@@ -640,8 +606,8 @@ export default function BecomeCreatorScreen() {
         )}
       </Pressable>
 
-      <Text style={[styles.inputLabel, themeStyles.text]}>Back of ID *</Text>
-      <Text style={[styles.uploadHint, themeStyles.textSecondary]}>Clear photo of the back side of your government-issued ID</Text>
+      <Text style={[styles.inputLabel, themeStyles.text]}>Back of ID (Optional)</Text>
+      <Text style={[styles.uploadHint, themeStyles.textSecondary]}>Optional for now. Add the back side of your ID if you want it stored.</Text>
       <Pressable onPress={() => pickIdImage('back')} style={[styles.uploadBox, themeStyles.placeholderBox]}>
         {idBackImage ? (
           <Image source={{ uri: idBackImage }} style={styles.idPreview} resizeMode="cover" />
@@ -653,8 +619,8 @@ export default function BecomeCreatorScreen() {
         )}
       </Pressable>
 
-      <Text style={[styles.inputLabel, themeStyles.text]}>Selfie with ID *</Text>
-      <Text style={[styles.uploadHint, themeStyles.textSecondary]}>Take a selfie holding your ID next to your face for verification</Text>
+      <Text style={[styles.inputLabel, themeStyles.text]}>Selfie with ID (Optional)</Text>
+      <Text style={[styles.uploadHint, themeStyles.textSecondary]}>Optional for now. You can skip this until creator verification is connected to a real backend flow.</Text>
       <Pressable onPress={() => pickIdImage('selfie')} style={[styles.uploadBox, themeStyles.placeholderBox]}>
         {idSelfieImage ? (
           <Image source={{ uri: idSelfieImage }} style={styles.idPreview} resizeMode="cover" />
