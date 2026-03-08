@@ -1,546 +1,45 @@
 import { Ionicons } from '@expo/vector-icons';
-import { useFocusEffect } from '@react-navigation/native';
-import { useRouter } from 'expo-router';
-import React, { useCallback, useEffect, useRef, useState } from 'react';
-import {
-  Animated,
-  Image,
-  Modal,
-  Pressable,
-  RefreshControl,
-  ScrollView,
-  StatusBar,
-  StyleSheet,
-  Text,
-  TextInput,
-  View
-} from 'react-native';
+import React from 'react';
+import { StatusBar, StyleSheet, Text, View } from 'react-native';
 
 import { useLanguage } from '@/context/LanguageContext';
 import { useTheme } from '@/context/ThemeContext';
-import { useUnread } from '@/context/UnreadContext';
-import { auth } from '@/frontend/session';
-import { supabase } from '@/frontend/store';
-
-type Thread = {
-  partnerId: string;
-  partnerName: string;
-  partnerAvatar: string | null;
-  lastMessage: string;
-  date: string;
-  unreadCount: number;
-  lastMessageTime: Date;
-};
-
-// --- SKELETON COMPONENT ---
-const SkeletonItem = ({ width, height, borderRadius = 4, style }: any) => {
-  const { theme } = useTheme();
-  const opacity = useRef(new Animated.Value(0.3)).current;
-
-  useEffect(() => {
-    Animated.loop(
-      Animated.sequence([
-        Animated.timing(opacity, { toValue: 0.7, duration: 800, useNativeDriver: true }),
-        Animated.timing(opacity, { toValue: 0.3, duration: 800, useNativeDriver: true })
-      ])
-    ).start();
-  }, [opacity]);
-
-  return (
-    <Animated.View
-      style={[
-        {
-          width,
-          height,
-          borderRadius,
-          backgroundColor: theme.cardBorder,
-          opacity
-        },
-        style
-      ]}
-    />
-  );
-};
 
 export default function MessageScreen() {
-  const router = useRouter();
-  const { theme, isDark: _isDark } = useTheme();
+  const { theme, isDark } = useTheme();
   const { t } = useLanguage();
-  const { refreshUnreadCount } = useUnread();
-
-  const [threads, setThreads] = useState<Thread[]>([]);
-  const [filteredThreads, setFilteredThreads] = useState<Thread[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
-  const currentUser = auth.currentUser;
-
-  const [showFilterModal, setShowFilterModal] = useState(false);
-  const [filterUnread, setFilterUnread] = useState(false);
-  const [sortBy, setSortBy] = useState<'recent' | 'unread'>('recent');
-
-  // --- SEARCH STATE ---
-  const [isSearchVisible, setIsSearchVisible] = useState(false);
-  const [searchQuery, setSearchQuery] = useState('');
-
-  const fetchMessages = async () => {
-    if (!currentUser) return;
-    try {
-      const { data: messages, error } = await supabase
-        .from('messages')
-        .select('*')
-        .or(`sender_id.eq.${currentUser.uid},receiver_id.eq.${currentUser.uid}`)
-        .order('created_at', { ascending: false });
-
-      if (error) throw error;
-
-      const threadMap = new Map<string, Thread>();
-
-      for (const msg of messages) {
-        if (msg.is_deleted) continue;
-
-        const isMe = msg.sender_id === currentUser.uid;
-        const partnerId = isMe ? msg.receiver_id : msg.sender_id;
-
-        if (!threadMap.has(partnerId)) {
-          const { data: userData } = await supabase
-            .from('users')
-            .select('full_name, avatar_url')
-            .eq('firebase_uid', partnerId)
-            .single();
-
-          threadMap.set(partnerId, {
-            partnerId,
-            partnerName: userData?.full_name || 'User',
-            partnerAvatar: userData?.avatar_url || null,
-            lastMessage: msg.content || (msg.media_url ? '📷 Image' : ''),
-            date: new Date(msg.created_at).toLocaleDateString('en-US', {
-              month: 'short',
-              day: 'numeric',
-              year: new Date().getFullYear() !== new Date(msg.created_at).getFullYear() ? 'numeric' : undefined
-            }),
-            unreadCount: 0,
-            lastMessageTime: new Date(msg.created_at)
-          });
-        }
-
-        const thread = threadMap.get(partnerId)!;
-
-        // Count unread messages (only messages sent to current user that are unread and not deleted)
-        if (!isMe && !msg.is_read && !msg.is_deleted) {
-          thread.unreadCount += 1;
-        }
-      }
-
-      const threadList = Array.from(threadMap.values());
-      setThreads(threadList);
-      // Pass searchQuery to applyFilters
-      applyFilters(threadList, filterUnread, sortBy, searchQuery);
-
-      // Refresh global unread count
-      refreshUnreadCount();
-
-    } catch (err) {
-      console.error('Error fetching messages:', err);
-    } finally {
-      setLoading(false);
-      setRefreshing(false);
-    }
-  };
-
-  // Set up real-time subscription for messages
-  useEffect(() => {
-    if (!currentUser) return;
-
-    const channel = supabase
-      .channel('messages-real-time')
-      .on(
-        'postgres_changes',
-        {
-          event: '*',
-          schema: 'public',
-          table: 'messages',
-          filter: `or(sender_id.eq.${currentUser.uid},receiver_id.eq.${currentUser.uid})`,
-        },
-        (payload) => {
-          console.log('Real-time message update received:', payload);
-          // Refresh messages when any change occurs
-          fetchMessages();
-        }
-      )
-      .subscribe();
-
-    return () => {
-      supabase.removeChannel(channel);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentUser, refreshUnreadCount]);
-
-  // --- FILTER LOGIC INCLUDE SEARCH ---
-  const applyFilters = (
-    threadsList: Thread[],
-    unreadFilter: boolean,
-    sort: 'recent' | 'unread',
-    search: string
-  ) => {
-    let result = [...threadsList];
-
-    // Apply Search Filter
-    if (search.trim() !== '') {
-      const lowerSearch = search.toLowerCase();
-      result = result.filter(t =>
-        t.partnerName.toLowerCase().includes(lowerSearch) ||
-        t.lastMessage.toLowerCase().includes(lowerSearch)
-      );
-    }
-
-    // Apply unread filter
-    if (unreadFilter) {
-      result = result.filter(t => t.unreadCount > 0);
-    }
-
-    // Apply sorting
-    if (sort === 'recent') {
-      result.sort((a, b) => b.lastMessageTime.getTime() - a.lastMessageTime.getTime());
-    } else if (sort === 'unread') {
-      result.sort((a, b) => b.unreadCount - a.unreadCount || b.lastMessageTime.getTime() - a.lastMessageTime.getTime());
-    }
-
-    setFilteredThreads(result);
-  };
-
-  useFocusEffect(
-    useCallback(() => {
-      fetchMessages();
-      // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [currentUser, refreshUnreadCount])
-  );
-
-  // --- EFFECT DEPENDENCIES ---
-  useEffect(() => {
-    applyFilters(threads, filterUnread, sortBy, searchQuery);
-  }, [filterUnread, sortBy, threads, searchQuery]);
-
-  const onRefresh = () => {
-    setRefreshing(true);
-    fetchMessages();
-  };
-
-  const handleFilterApply = () => {
-    applyFilters(threads, filterUnread, sortBy, searchQuery);
-    setShowFilterModal(false);
-  };
-
-  const handleFilterReset = () => {
-    setFilterUnread(false);
-    setSortBy('recent');
-    applyFilters(threads, false, 'recent', searchQuery);
-    setShowFilterModal(false);
-  };
-
-  // --- HANDLER FOR SEARCH CLOSE ---
-  const closeSearch = () => {
-    setIsSearchVisible(false);
-    setSearchQuery('');
-  };
-
-  const getTimeDisplay = (date: Date) => {
-    const now = new Date();
-    const diffInHours = (now.getTime() - date.getTime()) / (1000 * 60 * 60);
-
-    if (diffInHours < 24) {
-      return date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
-    } else if (diffInHours < 168) {
-      return date.toLocaleDateString('en-US', { weekday: 'short' });
-    } else {
-      return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-    }
-  };
-
-  // DYNAMIC STYLES
-  const themeStyles = {
-    container: { backgroundColor: theme.background },
-    header: { backgroundColor: theme.card },
-    text: { color: theme.text },
-    textSecondary: { color: theme.textSecondary },
-    card: { backgroundColor: theme.card, borderColor: theme.cardBorder, borderWidth: 1 },
-    input: { backgroundColor: theme.inputBackground, color: theme.text },
-    avatarPlaceholder: { backgroundColor: theme.tint },
-    modalBg: { backgroundColor: theme.card },
-  };
 
   return (
-    <View style={[styles.container, themeStyles.container]}>
-      <StatusBar barStyle={_isDark ? "light-content" : "dark-content"} />
+    <View style={[styles.container, { backgroundColor: theme.background }]}>
+      <StatusBar barStyle={isDark ? 'light-content' : 'dark-content'} />
 
-      {/* HEADER */}
-      <View style={[styles.header, themeStyles.header]}>
-
-        {/* CONDITIONAL RENDERING FOR SEARCH VS TITLE */}
-        {isSearchVisible ? (
-          <View style={[styles.searchBarContainer, themeStyles.input]}>
-            <Ionicons name="search" size={20} color={theme.textSecondary} />
-            <TextInput
-              style={[styles.searchInput, { color: theme.text }]}
-              placeholder="Search..."
-              placeholderTextColor={theme.textSecondary}
-              value={searchQuery}
-              onChangeText={setSearchQuery}
-              autoFocus
-            />
-            {searchQuery.length > 0 && (
-              <Pressable onPress={() => setSearchQuery('')} style={{ marginRight: 8 }}>
-                <Ionicons name="close-circle" size={18} color={theme.textSecondary} />
-              </Pressable>
-            )}
-            <Pressable onPress={closeSearch}>
-              <Text style={{ color: theme.tint, fontWeight: '600' }}>Cancel</Text>
-            </Pressable>
-          </View>
-        ) : (
-          <View style={styles.headerTop}>
-            <View>
-              <Text style={[styles.title, themeStyles.text]}>{t('messagesTitle')}</Text>
-              <Text style={[styles.subtitle, themeStyles.textSecondary]}>
-                {loading ? '...' : filteredThreads.length} {filteredThreads.length === 1 ? 'conversation' : 'conversations'}
-              </Text>
-            </View>
-            <View style={styles.headerIcons}>
-              {/* SEARCH BUTTON */}
-              <Pressable
-                onPress={() => setIsSearchVisible(true)}
-                style={styles.filterButton}
-              >
-                <Ionicons
-                  name="search"
-                  size={24}
-                  color={theme.text}
-                />
-              </Pressable>
-
-              <Pressable
-                onPress={() => setShowFilterModal(true)}
-                style={[styles.filterButton, { backgroundColor: filterUnread || sortBy !== 'recent' ? theme.tint + '20' : 'transparent' }]}
-              >
-                <Ionicons
-                  name="options"
-                  size={24}
-                  color={filterUnread || sortBy !== 'recent' ? theme.tint : theme.text}
-                />
-              </Pressable>
-            </View>
-          </View>
-        )}
+      <View style={[styles.header, { backgroundColor: theme.card }]}>
+        <Text style={[styles.title, { color: theme.text }]}>{t('messagesTitle')}</Text>
+        <Text style={[styles.subtitle, { color: theme.textSecondary }]}>
+          Placeholder page
+        </Text>
       </View>
 
-      {/* MESSAGE LIST */}
-      <ScrollView
-        contentContainerStyle={styles.listContent}
-        refreshControl={
-          <RefreshControl
-            refreshing={refreshing}
-            onRefresh={onRefresh}
-            tintColor={theme.tint}
-            colors={[theme.tint]}
-          />
-        }
-        showsVerticalScrollIndicator={false}
-      >
-        {loading ? (
-          // SKELETON LOADER
-          <View>
-            {Array.from({ length: 8 }).map((_, index) => (
-              <View key={index} style={[styles.threadCard, themeStyles.card]}>
-                <SkeletonItem width={56} height={56} borderRadius={28} style={{ marginRight: 16 }} />
-                <View style={{ flex: 1 }}>
-                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6 }}>
-                    <SkeletonItem width={120} height={20} borderRadius={4} />
-                    <SkeletonItem width={40} height={16} borderRadius={4} />
-                  </View>
-                  <SkeletonItem width="80%" height={16} borderRadius={4} />
-                </View>
-              </View>
-            ))}
-          </View>
-        ) : filteredThreads.length === 0 ? (
-          <View style={styles.emptyContainer}>
-            <Ionicons name="chatbubble-ellipses-outline" size={80} color={theme.textSecondary} />
-            <Text style={[styles.emptyTitle, themeStyles.text]}>
-              {searchQuery ? 'No results found' : t('noMessages')}
-            </Text>
-            <Text style={[styles.emptySubtitle, themeStyles.textSecondary]}>
-              {searchQuery
-                ? `We couldn't find any conversations matching "${searchQuery}"`
-                : filterUnread
-                  ? 'No unread messages'
-                  : 'Start a conversation to see messages here'
-              }
-            </Text>
-          </View>
-        ) : (
-          filteredThreads.map((thread) => (
-            <Pressable
-              key={thread.partnerId}
-              style={[styles.threadCard, themeStyles.card]}
-              onPress={() => router.push(`/chat/${thread.partnerId}`)}
-            >
-              {/* AVATAR WITH ONLINE INDICATOR */}
-              <View style={styles.avatarContainer}>
-                {thread.partnerAvatar ? (
-                  <Image source={{ uri: thread.partnerAvatar }} style={styles.avatar} />
-                ) : (
-                  <View style={[styles.avatar, themeStyles.avatarPlaceholder]}>
-                    <Text style={[styles.avatarText, { color: '#fff' }]}>
-                      {thread.partnerName.charAt(0).toUpperCase()}
-                    </Text>
-                  </View>
-                )}
-                {thread.unreadCount > 0 && (
-                  <View style={[styles.unreadIndicator, { backgroundColor: theme.tint }]} />
-                )}
-              </View>
-
-              {/* MESSAGE CONTENT */}
-              <View style={styles.threadBody}>
-                <View style={styles.threadHeader}>
-                  <Text style={[styles.partnerName, themeStyles.text]} numberOfLines={1}>
-                    {thread.partnerName}
-                  </Text>
-                  <Text style={[styles.timeText, themeStyles.textSecondary]}>
-                    {getTimeDisplay(thread.lastMessageTime)}
-                  </Text>
-                </View>
-                <Text
-                  style={[
-                    styles.lastMessage,
-                    thread.unreadCount > 0
-                      ? { color: theme.text, fontWeight: '600' }
-                      : themeStyles.textSecondary
-                  ]}
-                  numberOfLines={2}
-                >
-                  {thread.lastMessage}
-                </Text>
-              </View>
-
-              {/* UNREAD BADGE */}
-              {thread.unreadCount > 0 && (
-                <View style={[styles.unreadBadge, { backgroundColor: theme.tint }]}>
-                  <Text style={styles.unreadText}>
-                    {thread.unreadCount > 99 ? '99+' : thread.unreadCount}
-                  </Text>
-                </View>
-              )}
-            </Pressable>
-          ))
-        )}
-      </ScrollView>
-
-      {/* FILTER MODAL */}
-      <Modal
-        visible={showFilterModal}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setShowFilterModal(false)}
-      >
-        <Pressable
-          style={styles.modalBackdrop}
-          onPress={() => setShowFilterModal(false)}
+      <View style={styles.content}>
+        <View
+          style={[
+            styles.card,
+            {
+              backgroundColor: theme.card,
+              borderColor: theme.cardBorder,
+            },
+          ]}
         >
-          <Pressable
-            style={[styles.modalContainer, themeStyles.modalBg]}
-            onPress={e => e.stopPropagation()}
-          >
-            {/* MODAL HEADER */}
-            <View style={styles.modalHeader}>
-              <Text style={[styles.modalTitle, themeStyles.text]}>Filter Messages</Text>
-              <Pressable onPress={() => setShowFilterModal(false)}>
-                <Ionicons name="close" size={24} color={theme.textSecondary} />
-              </Pressable>
-            </View>
+          <View style={[styles.iconWrap, { backgroundColor: `${theme.tint}18` }]}>
+            <Ionicons name="chatbubble-ellipses-outline" size={36} color={theme.tint} />
+          </View>
 
-            {/* FILTER OPTIONS */}
-            <View style={styles.filterSection}>
-              <Text style={[styles.filterSectionTitle, themeStyles.text]}>Show</Text>
-
-              <Pressable
-                style={[
-                  styles.filterOption,
-                  filterUnread && { backgroundColor: theme.tint + '20' }
-                ]}
-                onPress={() => setFilterUnread(!filterUnread)}
-              >
-                <View style={styles.filterOptionLeft}>
-                  <Ionicons
-                    name={filterUnread ? "checkbox" : "square-outline"}
-                    size={24}
-                    color={filterUnread ? theme.tint : theme.textSecondary}
-                  />
-                  <Text style={[styles.filterOptionText, themeStyles.text]}>Unread messages only</Text>
-                </View>
-                <Ionicons name="mail-unread" size={20} color={theme.textSecondary} />
-              </Pressable>
-            </View>
-
-            {/* SORT OPTIONS */}
-            <View style={styles.filterSection}>
-              <Text style={[styles.filterSectionTitle, themeStyles.text]}>Sort by</Text>
-
-              <Pressable
-                style={[
-                  styles.filterOption,
-                  sortBy === 'recent' && { backgroundColor: theme.tint + '20' }
-                ]}
-                onPress={() => setSortBy('recent')}
-              >
-                <View style={styles.filterOptionLeft}>
-                  <Ionicons
-                    name={sortBy === 'recent' ? "radio-button-on" : "radio-button-off"}
-                    size={24}
-                    color={sortBy === 'recent' ? theme.tint : theme.textSecondary}
-                  />
-                  <Text style={[styles.filterOptionText, themeStyles.text]}>Most recent</Text>
-                </View>
-                <Ionicons name="time" size={20} color={theme.textSecondary} />
-              </Pressable>
-
-              <Pressable
-                style={[
-                  styles.filterOption,
-                  sortBy === 'unread' && { backgroundColor: theme.tint + '20' }
-                ]}
-                onPress={() => setSortBy('unread')}
-              >
-                <View style={styles.filterOptionLeft}>
-                  <Ionicons
-                    name={sortBy === 'unread' ? "radio-button-on" : "radio-button-off"}
-                    size={24}
-                    color={sortBy === 'unread' ? theme.tint : theme.textSecondary}
-                  />
-                  <Text style={[styles.filterOptionText, themeStyles.text]}>Unread first</Text>
-                </View>
-                <Ionicons name="alert-circle" size={20} color={theme.textSecondary} />
-              </Pressable>
-            </View>
-
-            {/* ACTION BUTTONS */}
-            <View style={styles.modalActions}>
-              <Pressable
-                style={[styles.modalButton, styles.resetButton]}
-                onPress={handleFilterReset}
-              >
-                <Text style={[styles.resetButtonText, { color: theme.textSecondary }]}>Reset</Text>
-              </Pressable>
-
-              <Pressable
-                style={[styles.modalButton, styles.applyButton, { backgroundColor: theme.tint }]}
-                onPress={handleFilterApply}
-              >
-                <Text style={styles.applyButtonText}>Apply Filters</Text>
-              </Pressable>
-            </View>
-          </Pressable>
-        </Pressable>
-      </Modal>
+          <Text style={[styles.cardTitle, { color: theme.text }]}>{t('noMessages')}</Text>
+          <Text style={[styles.cardBody, { color: theme.textSecondary }]}>
+            Messaging is temporarily disabled on this screen. This placeholder keeps the tab stable while the message feature is being fixed.
+          </Text>
+        </View>
+      </View>
     </View>
   );
 }
@@ -555,244 +54,46 @@ const styles = StyleSheet.create({
     paddingBottom: 24,
     borderBottomLeftRadius: 30,
     borderBottomRightRadius: 30,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 8,
-    elevation: 2,
-    borderWidth: 0,
-    minHeight: 120,
-    justifyContent: 'center',
-  },
-  headerTop: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
   },
   title: {
     fontSize: 28,
     fontWeight: '700',
-    marginBottom: 4,
   },
   subtitle: {
-    fontSize: 16,
-    fontWeight: '500',
-  },
-  headerIcons: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  filterButton: {
-    padding: 8,
-    borderRadius: 12,
-    marginLeft: 8,
-  },
-  searchBarContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    borderRadius: 12,
-    paddingHorizontal: 12,
-    height: 48,
-  },
-  searchInput: {
-    flex: 1,
-    fontSize: 16,
-    marginLeft: 8,
-    marginRight: 8,
-    height: '100%',
-  },
-  listContent: {
-    flexGrow: 1,
-    paddingHorizontal: 20,
-    paddingTop: 20,
-  },
-  loadingContainer: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingTop: 100,
-  },
-  loadingText: {
-    marginTop: 12,
-    fontSize: 16,
-  },
-  emptyContainer: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingTop: 100,
-    paddingHorizontal: 40,
-  },
-  emptyTitle: {
-    fontSize: 20,
-    fontWeight: '700',
-    marginTop: 16,
-    marginBottom: 8,
-    textAlign: 'center',
-  },
-  emptySubtitle: {
-    fontSize: 16,
-    textAlign: 'center',
-    lineHeight: 22,
-  },
-  threadCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    padding: 16,
-    borderRadius: 20,
-    marginBottom: 12,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.05,
-    shadowRadius: 6,
-    elevation: 2,
-  },
-  avatarContainer: {
-    position: 'relative',
-    marginRight: 16,
-  },
-  avatar: {
-    width: 56,
-    height: 56,
-    borderRadius: 28,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  avatarText: {
-    fontSize: 20,
-    fontWeight: '700'
-  },
-  unreadIndicator: {
-    position: 'absolute',
-    top: 2,
-    right: 2,
-    width: 12,
-    height: 12,
-    borderRadius: 6,
-    borderWidth: 2,
-    borderColor: '#fff',
-  },
-  threadBody: {
-    flex: 1,
-    marginRight: 12,
-  },
-  threadHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 6,
-  },
-  partnerName: {
-    fontSize: 17,
-    fontWeight: '700',
-    flex: 1,
-    marginRight: 8,
-  },
-  timeText: {
-    fontSize: 13,
-    fontWeight: '500',
-  },
-  lastMessage: {
+    marginTop: 6,
     fontSize: 15,
-    lineHeight: 20,
+    fontWeight: '500',
   },
-  unreadBadge: {
-    minWidth: 22,
-    height: 22,
-    borderRadius: 11,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: 6,
-  },
-  unreadText: {
-    color: '#fff',
-    fontSize: 12,
-    fontWeight: '800'
-  },
-  modalBackdrop: {
+  content: {
     flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.5)',
     justifyContent: 'center',
-    alignItems: 'center',
-    padding: 20,
+    paddingHorizontal: 20,
+    paddingBottom: 40,
   },
-  modalContainer: {
-    width: '100%',
+  card: {
+    alignItems: 'center',
+    borderWidth: 1,
     borderRadius: 24,
-    padding: 24,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 10 },
-    shadowOpacity: 0.25,
-    shadowRadius: 20,
-    elevation: 10,
+    paddingHorizontal: 24,
+    paddingVertical: 32,
   },
-  modalHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
+  iconWrap: {
+    width: 72,
+    height: 72,
+    borderRadius: 36,
     alignItems: 'center',
-    marginBottom: 24,
+    justifyContent: 'center',
+    marginBottom: 20,
   },
-  modalTitle: {
+  cardTitle: {
     fontSize: 22,
     fontWeight: '700',
+    textAlign: 'center',
   },
-  filterSection: {
-    marginBottom: 24,
-  },
-  filterSectionTitle: {
-    fontSize: 16,
-    fontWeight: '600',
-    marginBottom: 12,
-    opacity: 0.8,
-  },
-  filterOption: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingVertical: 12,
-    paddingHorizontal: 16,
-    borderRadius: 12,
-    marginBottom: 8,
-  },
-  filterOptionLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    flex: 1,
-  },
-  filterOptionText: {
-    fontSize: 16,
-    fontWeight: '500',
-    marginLeft: 12,
-    flex: 1,
-  },
-  modalActions: {
-    flexDirection: 'row',
-    gap: 12,
-    marginTop: 8,
-  },
-  modalButton: {
-    flex: 1,
-    paddingVertical: 16,
-    borderRadius: 16,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  resetButton: {
-    borderWidth: 2,
-    borderColor: '#e2e8f0',
-  },
-  applyButton: {
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.1,
-    shadowRadius: 8,
-    elevation: 4,
-  },
-  resetButtonText: {
-    fontSize: 16,
-    fontWeight: '600',
-  },
-  applyButtonText: {
-    color: '#fff',
-    fontSize: 16,
-    fontWeight: '600',
+  cardBody: {
+    marginTop: 10,
+    fontSize: 15,
+    lineHeight: 22,
+    textAlign: 'center',
   },
 });
